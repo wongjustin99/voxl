@@ -240,6 +240,10 @@ apps that should hear you.
 | `--resize-scale`       | the capture scale                   | so a viewer's window maps to the same number of points on the Mac                      |
 | `--show-cursor`        | `false` (`true` with `--read-only`) | include the host cursor in the video stream (for viewers/observers)                    |
 
+If the captured monitor disconnects, voxl switches to the current main display.
+If no replacement is available yet, video pauses and capture retries without closing
+viewer connections. Capture still requires Screen Recording permission.
+
 The other flags work as on Linux; `--audio-device-name`, `--microphone-fifo` and the
 rounded-corner flags don't apply.
 

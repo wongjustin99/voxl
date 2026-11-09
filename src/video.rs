@@ -74,7 +74,10 @@ pub fn spawn(
     if let Some(s) = &screen {
         *hub.resize_max.lock() = Some(s.max());
     }
+    #[cfg(target_os = "macos")]
+    let resize_enabled = screen.is_some();
     let mut p = build(&cfg, &hub)?;
+    hub.restart_clients();
     std::thread::Builder::new()
         .name("capture".into())
         .spawn(move || loop {
@@ -87,7 +90,9 @@ pub fn spawn(
             if let Err(e) = capture_loop(&mut cap, cfg.clone(), hub.clone(), job_tx, ret_rx) {
                 #[cfg(target_os = "linux")]
                 let resized = cap.geometry_changed();
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(target_os = "macos")]
+                let resized = cap.needs_rebuild();
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 let resized = false;
                 if resized {
                     log::info!("capture geometry changed: {e}");
@@ -104,16 +109,76 @@ pub fn spawn(
                     log::warn!("resize to {w}x{h} failed: {e}");
                 }
             }
-            p = match build(&cfg, &hub) {
-                Ok(p) => p,
-                Err(e) => {
-                    log::error!("video restart failed: {e}");
-                    std::process::exit(1);
-                }
-            };
+            #[cfg(target_os = "macos")]
+            {
+                p = restart_capture(
+                    &hub,
+                    || {
+                        let p = build(&cfg, &hub)?;
+                        if resize_enabled {
+                            screen = match crate::screen::Screen::open(cfg.display.as_deref()) {
+                                Ok(screen) => Some(screen),
+                                Err(error) => {
+                                    log::warn!("dynamic resolution unavailable: {error}");
+                                    None
+                                }
+                            };
+                            *hub.resize_max.lock() = screen.as_ref().map(|s| s.max());
+                            let mut extra = hub.hello_extra.lock();
+                            if screen.is_some() {
+                                extra.insert(
+                                    "resize".into(),
+                                    serde_json::json!({
+                                        "scale": crate::mac::resize_scale()
+                                    }),
+                                );
+                            } else {
+                                extra.remove("resize");
+                            }
+                        }
+                        Ok(p)
+                    },
+                    || std::thread::sleep(Duration::from_secs(1)),
+                );
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                p = match build(&cfg, &hub) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::error!("video restart failed: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                hub.restart_clients();
+            }
         })
         .unwrap();
     Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn restart_capture<T>(
+    hub: &Hub,
+    mut build: impl FnMut() -> Result<T, String>,
+    mut wait: impl FnMut(),
+) -> T {
+    let mut last_error = None;
+    loop {
+        match build() {
+            Ok(pipeline) => {
+                hub.restart_clients();
+                return pipeline;
+            }
+            Err(error) => {
+                if last_error.as_ref() != Some(&error) {
+                    log::warn!("capture unavailable: {error}; waiting to restart");
+                    last_error = Some(error);
+                }
+                wait();
+            }
+        }
+    }
 }
 
 fn build(cfg: &VideoConfig, hub: &Arc<Hub>) -> Result<Pipeline, String> {
@@ -174,8 +239,6 @@ fn build(cfg: &VideoConfig, hub: &Arc<Hub>) -> Result<Pipeline, String> {
         .name("encode".into())
         .spawn(move || encode_loop(stripes, job_rx, ret_tx, hub2, crf, po_crf))
         .unwrap();
-    // New geometry (and a keyframe) for clients already connected; no-op at startup.
-    hub.restart_clients();
     Ok(Pipeline {
         cap,
         job_tx,
@@ -1336,6 +1399,63 @@ fn marker_age(ms: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_restart_waits_for_display_then_updates_connected_clients() {
+        let hub = Hub::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let client = hub.add_client(tx);
+        client.started.store(true, Ordering::Relaxed);
+        client.needs_keyframe.store(false, Ordering::Relaxed);
+        client.inflight.lock().push_back(Inflight {
+            id: 1,
+            sent: Instant::now(),
+            bytes: 100,
+        });
+        let mut attempts = 0;
+        let mut waits = 0;
+        let display = restart_capture(
+            &hub,
+            || {
+                attempts += 1;
+                match attempts {
+                    1 => Err("display 4 is not available for capture".into()),
+                    2 => Err("no active displays".into()),
+                    _ => {
+                        hub.width.store(1816, Ordering::Relaxed);
+                        hub.height.store(1140, Ordering::Relaxed);
+                        *hub.stripes.lock() = vec![(0, 1140)];
+                        Ok(43)
+                    }
+                }
+            },
+            || {
+                assert!(rx.try_recv().is_err());
+                waits += 1;
+            },
+        );
+        assert_eq!(display, 43);
+        assert_eq!(waits, 2);
+        assert!(!client.started.load(Ordering::Relaxed));
+        assert!(client.needs_keyframe.load(Ordering::Relaxed));
+        assert!(client.inflight.lock().is_empty());
+        let Out::Text(hello) = rx.try_recv().unwrap() else {
+            panic!("expected new display geometry");
+        };
+        let hello: serde_json::Value = serde_json::from_str(&hello).unwrap();
+        assert_eq!(hello["w"], 1816);
+        assert_eq!(hello["h"], 1140);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn capture_restart_has_no_delay_when_display_is_ready() {
+        let hub = Hub::new();
+        assert_eq!(
+            restart_capture(&hub, || Ok(43), || panic!("unexpected wait")),
+            43
+        );
+    }
 
     const W: usize = 1280;
     const H: usize = 768;

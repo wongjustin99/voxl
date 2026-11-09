@@ -207,17 +207,6 @@ async fn serve(a: HashMap<String, String>) {
         })
         .flatten();
     let resize_on = screen.is_some();
-    // Desktop pixels per CSS pixel of the viewer's window. The default matches a
-    // 144 DPI desktop (apps drawn at 1.5x), so windows look as big as in the viewer;
-    // on a Mac, the capture's pixels per point.
-    #[cfg(target_os = "linux")]
-    let default_scale = 1.5;
-    #[cfg(target_os = "macos")]
-    let default_scale = mac::capture_scale();
-    // On Windows, the display's scaling (150% -> 1.5).
-    #[cfg(windows)]
-    let default_scale = win::dpi_scale();
-    let resize_scale = range_max(a.get("resize-scale"), default_scale);
     if let Err(e) = video::spawn(vcfg, hub.clone(), screen) {
         log::error!("video init failed: {e}");
         std::process::exit(1);
@@ -312,6 +301,17 @@ async fn serve(a: HashMap<String, String>) {
         .then_some(())
         .and(mic_sink)
         .map(|sink| mic::spawn(sink, hub.clone()));
+    // Desktop pixels per CSS pixel of the viewer's window. The default matches a
+    // 144 DPI desktop (apps drawn at 1.5x), so windows look as big as in the viewer;
+    // on a Mac, the capture's pixels per point.
+    #[cfg(target_os = "linux")]
+    let default_scale = 1.5;
+    #[cfg(target_os = "macos")]
+    let default_scale = mac::capture_scale();
+    // On Windows, the display's scaling (150% -> 1.5).
+    #[cfg(windows)]
+    let default_scale = win::dpi_scale();
+    let resize_scale = range_max(a.get("resize-scale"), default_scale);
     {
         let mut extra = hub.hello_extra.lock();
         extra.insert("os".into(), std::env::consts::OS.into());

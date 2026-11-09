@@ -98,14 +98,16 @@ unsafe fn dict_i64(dict: CFDictionaryRef, key: *const c_void) -> Option<i64> {
 
 impl Capturer {
     pub fn new(_display: Option<&str>) -> Result<Self, String> {
-        let display = super::display();
+        let display = super::refresh_display()?;
+        if !unsafe { CGPreflightScreenCaptureAccess() } {
+            return Err("Screen Recording permission is missing".into());
+        }
         let (width, height) = super::capture_size(display);
         let geometry = Geometry {
             display,
             bounds: unsafe { CGDisplayBounds(display) },
             width,
         };
-        *super::GEOMETRY.lock() = Some(geometry);
         let fps = super::fps();
         let incoming = Arc::new(Mutex::new(Incoming::default()));
         let (wake_r, wake_w) = crate::hub::wake_pipe().map_err(|e| e.to_string())?;
@@ -222,6 +224,7 @@ impl Capturer {
             log::warn!("no frame from ScreenCaptureKit yet");
         }
         me.grab(me.full())?;
+        *super::GEOMETRY.lock() = Some(geometry);
         log::info!("capturing display {display} with ScreenCaptureKit at {width}x{height}");
         Ok(me)
     }
@@ -259,7 +262,8 @@ impl Capturer {
             self.last_check = Instant::now();
             // Resolution changed (System Settings, another display arrangement).
             let b = unsafe { CGDisplayBounds(self.geometry.display) };
-            if b.size != self.geometry.bounds.size
+            if !super::active_displays().contains(&self.geometry.display)
+                || b.size != self.geometry.bounds.size
                 || super::capture_size(self.geometry.display) != (self.width, self.height)
             {
                 log::info!("display changed; restarting capture");

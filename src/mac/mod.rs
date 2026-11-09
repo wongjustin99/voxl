@@ -46,14 +46,31 @@ struct Settings {
     display: u32,
     /// Fixed pixels per point (--capture-scale), or None for automatic.
     scale: Option<f64>,
+    automatic_scale: f64,
+    resize_scale: Option<f64>,
     max_pixels: f64,
     fps: u32,
     show_cursor: bool,
 }
 
+impl Settings {
+    fn switch_display(&mut self, display: u32, points: (f64, f64), native: f64) {
+        self.display = display;
+        self.automatic_scale = auto_scale(points.0, points.1, native, self.max_pixels);
+    }
+
+    fn resize_scale(&self) -> f64 {
+        self.resize_scale
+            .or(self.scale)
+            .unwrap_or(self.automatic_scale)
+    }
+}
+
 static SETTINGS: Mutex<Settings> = Mutex::new(Settings {
     display: 0,
     scale: None,
+    automatic_scale: 1.0,
+    resize_scale: None,
     max_pixels: 2560.0 * 1600.0,
     fps: 60,
     show_cursor: false,
@@ -72,6 +89,9 @@ pub fn init(a: &HashMap<String, String>) {
             .get("capture-scale")
             .and_then(|v| v.parse().ok())
             .filter(|&v: &f64| v > 0.0);
+        s.resize_scale = a
+            .get("resize-scale")
+            .and_then(|v| v.rsplit('-').next()?.trim().parse().ok());
         if let Some(px) = a.get("max-capture-pixels").and_then(|v| v.parse().ok()) {
             s.max_pixels = px;
         }
@@ -102,14 +122,11 @@ pub fn init(a: &HashMap<String, String>) {
     {
         let b = unsafe { CGDisplayBounds(display) };
         let mut s = SETTINGS.lock();
-        if s.scale.is_none() {
-            s.scale = Some(auto_scale(
-                b.size.width,
-                b.size.height,
-                native_scale(display),
-                s.max_pixels,
-            ));
-        }
+        s.switch_display(
+            display,
+            (b.size.width, b.size.height),
+            native_scale(display),
+        );
     }
     let (w, h) = capture_size(display);
     log::info!(
@@ -162,6 +179,34 @@ pub fn display() -> u32 {
     SETTINGS.lock().display
 }
 
+fn select_active_display(selected: u32, active: &[u32]) -> Option<u32> {
+    if active.contains(&selected) {
+        Some(selected)
+    } else {
+        active.first().copied()
+    }
+}
+
+/// Keep the selected monitor when available, otherwise use the current main one.
+pub fn refresh_display() -> Result<u32, String> {
+    let active = active_displays();
+    let mut settings = SETTINGS.lock();
+    let next = select_active_display(settings.display, &active).ok_or("no active displays")?;
+    if next != settings.display {
+        log::info!(
+            "display {} is unavailable; capturing display {next}",
+            settings.display
+        );
+        let bounds = unsafe { CGDisplayBounds(next) };
+        settings.switch_display(
+            next,
+            (bounds.size.width, bounds.size.height),
+            native_scale(next),
+        );
+    }
+    Ok(next)
+}
+
 pub fn fps() -> u32 {
     SETTINGS.lock().fps
 }
@@ -178,10 +223,15 @@ fn auto_scale(w: f64, h: f64, native: f64, max_pixels: f64) -> f64 {
     native.min((max_pixels / (w * h).max(1.0)).sqrt()).max(0.25)
 }
 
-/// Desktop pixels per point, fixed at startup (--capture-scale or automatic) so every
-/// display mode streams at the same scale and the viewer's window maps to points.
+/// Desktop pixels per point, fixed per monitor so resolution changes preserve the
+/// mapping from the viewer's window to points.
 fn scale() -> f64 {
-    SETTINGS.lock().scale.unwrap_or(1.0)
+    let settings = SETTINGS.lock();
+    settings.scale.unwrap_or(settings.automatic_scale)
+}
+
+pub fn resize_scale() -> f64 {
+    SETTINGS.lock().resize_scale()
 }
 
 /// Most pixels a frame should have (--max-capture-pixels).
@@ -230,6 +280,47 @@ fn prompt_accessibility() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removed_display_uses_current_main_display() {
+        assert_eq!(select_active_display(4, &[43]), Some(43));
+    }
+
+    #[test]
+    fn selected_display_is_preserved_when_still_connected() {
+        assert_eq!(select_active_display(4, &[43, 4]), Some(4));
+    }
+
+    #[test]
+    fn no_displays_can_recover_to_returning_or_replacement_monitor() {
+        assert_eq!(select_active_display(4, &[]), None);
+        assert_eq!(select_active_display(4, &[4]), Some(4));
+        assert_eq!(select_active_display(4, &[43]), Some(43));
+    }
+
+    #[test]
+    fn replacement_monitor_recalculates_auto_scale_but_preserves_explicit_scale() {
+        for scale in [None, Some(1.0)] {
+            let mut settings = Settings {
+                display: 4,
+                scale,
+                automatic_scale: 1.0,
+                resize_scale: None,
+                max_pixels: 2_073_600.0,
+                fps: 60,
+                show_cursor: false,
+            };
+            settings.switch_display(43, (3840.0, 2160.0), 2.0);
+            assert_eq!(settings.display, 43);
+            assert_eq!(
+                settings.scale.unwrap_or(settings.automatic_scale),
+                scale.unwrap_or(0.5)
+            );
+            assert_eq!(settings.resize_scale(), scale.unwrap_or(0.5));
+            settings.resize_scale = Some(0.75);
+            assert_eq!(settings.resize_scale(), 0.75);
+        }
+    }
 
     #[test]
     fn show_cursor_default_and_flags() {
