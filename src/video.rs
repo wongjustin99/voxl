@@ -20,6 +20,7 @@ pub struct VideoConfig {
     pub convert_threads: usize,
     pub crf: f32,
     pub max_kbps: u32,
+    pub vbv_frames: f64,
     pub paintover_crf: f32,
     pub paintover_burst: u32,
     pub paintover_delay_ms: u64,
@@ -122,12 +123,13 @@ fn build(cfg: &VideoConfig, hub: &Arc<Hub>) -> Result<Pipeline, String> {
     hub.height.store(h, Ordering::Relaxed);
     hub.activity.reset(w, h);
     log::info!(
-        "capturing {}x{} @ {} fps, preset {} threads {}",
+        "capturing {}x{} @ {} fps, preset {} threads {}, VBV {} frames",
         w,
         h,
         cfg.fps,
         cfg.preset,
-        cfg.threads
+        cfg.threads,
+        cfg.vbv_frames
     );
 
     let (job_tx, job_rx) = mpsc::sync_channel::<Job>(1);
@@ -148,6 +150,7 @@ fn build(cfg: &VideoConfig, hub: &Arc<Hub>) -> Result<Pipeline, String> {
             threads: fixed,
             crf: cfg.crf,
             max_kbps: cfg.max_kbps,
+            vbv_frames: cfg.vbv_frames,
         };
         let max_threads = if cfg.adaptive_threads {
             (cfg.threads / layout.len() as u32).max(1)
@@ -1410,6 +1413,7 @@ mod tests {
                     threads: 1,
                     crf,
                     max_kbps,
+                    vbv_frames: 1.25,
                 })
                 .unwrap(),
                 motion: MotionQuality::default(),

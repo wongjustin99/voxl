@@ -161,6 +161,7 @@ async fn serve(a: HashMap<String, String>) {
         crf: range_max(a.get("crf"), 24.0) as f32,
         // Selkies' --video-bitrate becomes the ceiling for adaptive bitrate.
         max_kbps: range_max(a.get("max-kbps").or(a.get("video-bitrate")), 30000.0) as u32,
+        vbv_frames: range_max(a.get("vbv-frames"), 1.25),
         paintover_crf: range_max(a.get("paintover-crf"), 16.0) as f32,
         paintover_burst: range_max(a.get("paintover-burst"), 3.0) as u32,
         paintover_delay_ms: range_max(a.get("paintover-delay-ms"), 150.0) as u64,

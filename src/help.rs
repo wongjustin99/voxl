@@ -28,6 +28,9 @@ Video:
   --crf                         base quality (default 24)
   --max-kbps, --min-kbps        adaptive bitrate ceiling and floor
                                 (default 30000, 2000)
+  --vbv-frames                  burst buffer in frames (default/minimum 1.25)
+                                larger values allow bigger scene-change frames
+                                at the cost of more transmission delay
   --preset                      x264 preset (default ultrafast)
   --encoder-threads             x264 sliced threads (default min(4, cores/4))
   --adaptive-threads            encode on one thread, fanning out only under

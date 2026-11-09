@@ -34,9 +34,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         || fps == 0
         || cap == 0
         || !vbv_frames.is_finite()
-        || vbv_frames < 1.1
+        || vbv_frames < 1.25
     {
-        return Err("need positive even dimensions, fps/cap > 0, and VBV >= 1.1 frames".into());
+        return Err("need positive even dimensions, fps/cap > 0, and VBV >= 1.25 frames".into());
     }
     let pixels = width as usize * height as usize;
     let frame_size = pixels * 3 / 2;
@@ -56,6 +56,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         crf,
         max_kbps: cap,
         preset: args[6].clone(),
+        vbv_frames,
         threads,
     })?;
     let mut frame = vec![0u8; frame_size];
@@ -72,11 +73,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let boost = cap.saturating_mul(4).max(16_000);
             encoder.set_rate_buf(crf, boost, boost / fps * 8);
         } else if count == 1 {
-            encoder.set_rate_buf(
-                crf,
-                cap,
-                (cap as f64 * vbv_frames / fps as f64).ceil() as u32,
-            );
+            encoder.set_rate(crf, cap);
         }
         let planes = Planes {
             y: &frame[..pixels],

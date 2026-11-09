@@ -23,6 +23,8 @@ pub struct EncoderConfig {
     pub crf: f32,
     /// VBV cap in kbit/s (0 = uncapped).
     pub max_kbps: u32,
+    /// Burst budget in nominal frames (at least 1.25).
+    pub vbv_frames: f64,
 }
 
 pub struct Encoder {
@@ -30,6 +32,7 @@ pub struct Encoder {
     param: ffi::x264_param_t,
     pic: ffi::x264_picture_t,
     pts: i64,
+    vbv_frames: f64,
     pub width: u32,
     pub height: u32,
 }
@@ -46,6 +49,9 @@ pub struct Planes<'a> {
 
 impl Encoder {
     pub fn new(cfg: &EncoderConfig) -> Result<Self, String> {
+        if !cfg.vbv_frames.is_finite() || cfg.vbv_frames < 1.25 {
+            return Err("vbv-frames must be finite and at least 1.25".into());
+        }
         unsafe {
             let mut param: ffi::x264_param_t = std::mem::zeroed();
             let preset = CString::new(cfg.preset.as_str()).unwrap();
@@ -95,8 +101,8 @@ impl Encoder {
             param.rc.b_mb_tree = 0;
             if cfg.max_kbps > 0 {
                 param.rc.i_vbv_max_bitrate = cfg.max_kbps as i32;
-                // ~1.25 frames of buffer keeps single-frame spikes bounded.
-                param.rc.i_vbv_buffer_size = vbv_buffer_kbit(cfg.max_kbps, cfg.fps) as i32;
+                param.rc.i_vbv_buffer_size =
+                    vbv_buffer_kbit(cfg.max_kbps, cfg.fps, cfg.vbv_frames) as i32;
             }
             // sRGB content (BT.709 primaries, sRGB transfer) in BT.601 limited range,
             // matching libyuv ARGBToI420 and the macOS NV12 capture.
@@ -120,18 +126,19 @@ impl Encoder {
                 param,
                 pic,
                 pts: 0,
+                vbv_frames: cfg.vbv_frames,
                 width: cfg.width,
                 height: cfg.height,
             })
         }
     }
 
-    /// Reconfigure rate control on the fly (buffer of ~1.25 frames at `max_kbps`).
+    /// Reconfigure rate control using the configured burst window.
     pub fn set_rate(&mut self, crf: f32, max_kbps: u32) {
         self.set_rate_buf(
             crf,
             max_kbps,
-            vbv_buffer_kbit(max_kbps, self.param.i_fps_num),
+            vbv_buffer_kbit(max_kbps, self.param.i_fps_num, self.vbv_frames),
         );
     }
 
@@ -211,11 +218,11 @@ impl Encoder {
     }
 }
 
-/// A VBV buffer of 1.25 frames at `max_kbps`, rounded up: x264 treats a buffer under
-/// 1.1 frames as a single-frame VBV, which may lower rows of a frame below its starting
-/// QP (video.rs's MotionQuality relies on it not doing that).
-fn vbv_buffer_kbit(max_kbps: u32, fps: u32) -> u32 {
-    (max_kbps * 5).div_ceil(4 * fps.max(1))
+/// Round the configured window up to whole kbit. Keep it above 1.1 frames:
+/// single-frame VBV may lower rows below the starting QP, violating MotionQuality's
+/// assumption that VBV only raises QP within a frame.
+fn vbv_buffer_kbit(max_kbps: u32, fps: u32, frames: f64) -> u32 {
+    (max_kbps as f64 * frames / fps.max(1) as f64).ceil() as u32
 }
 
 /// What x264 made of one picture.
@@ -238,6 +245,28 @@ impl Drop for Encoder {
 #[cfg(test)]
 mod bench {
     use super::*;
+
+    #[test]
+    fn vbv_window_survives_rate_changes_and_keyframe_boosts() {
+        for (frames, initial, reduced) in [(1.25, 417, 167), (5.0, 1667, 667)] {
+            let mut enc = Encoder::new(&EncoderConfig {
+                width: 32,
+                height: 32,
+                fps: 60,
+                preset: "ultrafast".into(),
+                threads: 1,
+                crf: 24.0,
+                max_kbps: 20_000,
+                vbv_frames: frames,
+            })
+            .unwrap();
+            assert_eq!(enc.param.rc.i_vbv_buffer_size, initial);
+            enc.set_rate_buf(24.0, 80_000, 10_664);
+            assert_eq!(enc.param.rc.i_vbv_buffer_size, 10_664);
+            enc.set_rate(24.0, 8_000);
+            assert_eq!(enc.param.rc.i_vbv_buffer_size, reduced);
+        }
+    }
 
     /// cargo test --release encode_cost -- --ignored --nocapture
     #[test]
@@ -268,6 +297,7 @@ mod bench {
                 threads,
                 crf: 24.0,
                 max_kbps: 30000,
+                vbv_frames: 1.25,
             })
             .unwrap();
             let mut y = vec![0u8; w * h];
