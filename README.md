@@ -238,6 +238,7 @@ apps that should hear you.
 | `--max-capture-pixels` | `4096000` (2560x1600)               | pixel budget for the automatic scale: x264's cost grows with area                      |
 | `--microphone-device`  | first loopback device found         | output device (name or prefix) to play the browser microphone into                     |
 | `--resize-scale`       | the capture scale                   | so a viewer's window maps to the same number of points on the Mac                      |
+| `--rotate-display`     | `false`                             | with `--enable-resize`, an upright window (a phone) turns the display on its side      |
 | `--show-cursor`        | `false` (`true` with `--read-only`) | include the host cursor in the video stream (for viewers/observers)                    |
 
 If the captured monitor disconnects, voxl switches to the current main display.
