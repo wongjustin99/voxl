@@ -92,6 +92,39 @@ For smooth scrolling, start that display with the patched server:
 - `mictest.mjs`: microphone end to end with a fake 440 Hz microphone, a private PulseAudio
   pipe source and its own voxl (`PULSEAUDIO`: the pulseaudio package).
 
+## Offline codec comparison (macOS)
+
+`codec-lab.py` generates an eight-second 1080p60 text/scroll/scene-cut video and
+compares the server's actual x264 wrapper with tuning variants, VideoToolbox
+H.264/HEVC, and software AV1/HEVC 4:4:4 probes. It never captures a display or
+connects to a running server. Requires FFmpeg (with those encoders), Rust, and uv.
+
+```sh
+uv run bench/codec-lab.py --output ~/Movies/voxl-codec-lab
+open ~/Movies/voxl-codec-lab/index.html
+# Smaller smoke test, or a video you explicitly select:
+uv run bench/codec-lab.py --quick --output /tmp/voxl-codec-smoke
+uv run bench/codec-lab.py --input /path/to/video.mp4 --output ~/Movies/voxl-video-test
+cargo build --release --example codec-replay
+python3 bench/tests/codec-replay.py
+uv run bench/tests/codec-lab.py
+```
+
+The page has paired players, frame stepping, per-frame SSIM curves, actual bitrate,
+frame burst sizes, and downloadable encoded originals. Browser playback uses
+near-lossless H.264 review copies. Output directories must be new; frames stream
+through pipes and the script stops between candidates if storage is low.
+
+This measures encoder quality/throughput, not end-to-end latency or the full server:
+no adaptive rate controller, MotionQuality correction, damage maps, paint-over,
+WebSocket, or iOS decoder. Default worker cap is 20 Mbps, matching the current
+single-stripe allocation at a 10 Mbps adaptive target, not a strict wire cap.
+VideoToolbox uses FFmpeg realtime/no-reordering settings, not Apple's specialized
+low-latency rate-control mode. Rate-control policies and actual bitrates differ;
+compare measured bytes before attributing a quality improvement to the codec.
+The 4:4:4 probe upsamples common I420 input; it cannot test true RGB text detail or
+establish A15 hardware support. An explicit input video must cover `--seconds`.
+
 ## macOS
 
 `macos/` tests voxl on a Mac against a running instance (`PORT`, default 6960, started
